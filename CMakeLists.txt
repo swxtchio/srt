@@ -65,7 +65,7 @@ if(WIN32)
 			string(REGEX REPLACE "/MD" "/MT" ${variable} "${${variable}}")
 		endif()
 	endforeach()
-	endif()
+endif()
 
 # The CMAKE_BUILD_TYPE seems not to be always set, weird.
 if (NOT DEFINED ENABLE_DEBUG)
