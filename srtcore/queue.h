@@ -114,6 +114,10 @@ private:
     /// @return 0: success, -1: failure.
     int increase_();
 
+    /// Shrink the unit queue by freeing CQEntries whose units are all free.
+    /// Called periodically from makeUnitFree when utilization is low.
+    void shrink_();
+
     /// @brief Allocated a CQEntry of iNumUnits with each unit of mss bytes.
     /// @param iNumUnits a number of units to allocate
     /// @param mss the size of each unit in bytes.
@@ -157,6 +161,7 @@ public:
     };
 
     static EReschedule rescheduleIf(bool cond) { return cond ? DO_RESCHEDULE : DONT_RESCHEDULE; }
+    void resetAtFork();
 
     /// Update the timestamp of the UDT instance on the list.
     /// @param [in] u pointer to the UDT instance
@@ -338,7 +343,7 @@ public:
 
     /// @brief Update status of connections in the pending queue.
     /// Stop connecting if TTL expires. Resend handshake request every 250 ms if no response from the peer.
-    /// @param rst result of reading from a UDP socket: received packet / nothin read / read error.
+    /// @param rst result of reading from a UDP socket: received packet / nothing read / read error.
     /// @param cst target status for pending connection: reject or proceed.
     /// @param pktIn packet received from the UDP socket.
     void updateConnStatus(EReadStatus rst, EConnectStatus cst, CUnit* unit);
@@ -367,7 +372,7 @@ private:
     /// - Sockets with expired TTL go to the 'to_remove' list and removed from the queue straight away.
     /// - If HS request is to be resent (resend 250 ms if no response from the peer) go to the 'to_process' list.
     ///
-    /// @param rst result of reading from a UDP socket: received packet / nothin read / read error.
+    /// @param rst result of reading from a UDP socket: received packet / nothing read / read error.
     /// @param cst target status for pending connection: reject or proceed.
     /// @param iDstSockID destination socket ID of the received packet.
     /// @param[in,out] toRemove stores sockets with expired TTL.
@@ -401,6 +406,7 @@ public:
     ~CSndQueue();
 
 public:
+    void resetAtFork();
     // XXX There's currently no way to access the socket ID set for
     // whatever the queue is currently working for. Required to find
     // some way to do this, possibly by having a "reverse pointer".
@@ -439,6 +445,7 @@ public:
     int sockoptQuery(int level, int type) const;
 
     void setClosing() { m_bClosing = true; }
+    void stop();
 
 private:
     static void*  worker(void* param);
@@ -486,6 +493,7 @@ public:
     ~CRcvQueue();
 
 public:
+    void resetAtFork();
     // XXX There's currently no way to access the socket ID set for
     // whatever the queue is currently working. Required to find
     // some way to do this, possibly by having a "reverse pointer".
@@ -513,6 +521,7 @@ public:
 
     int getIPversion() { return m_iIPversion; }
 
+    void stop();
 private:
     static void*  worker(void* param);
     sync::CThread m_WorkerThread;
@@ -599,6 +608,19 @@ struct CMultiplexer
     {
     }
 
+    ~CMultiplexer()
+    {
+        if (m_pRcvQueue != NULL)
+            delete m_pRcvQueue;
+        if (m_pSndQueue != NULL)
+            delete m_pSndQueue;
+        if (m_pTimer != NULL)
+            delete m_pTimer;
+        close();
+    }
+    void resetAtFork();
+    void close();
+    void stop();
     void destroy();
 };
 

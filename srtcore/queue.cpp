@@ -154,6 +154,73 @@ int srt::CUnitQueue::increase_()
     return 0;
 }
 
+void srt::CUnitQueue::shrink_()
+{
+    // Only shrink if utilization is below 40% and we have more than 2 entries.
+    // Keep at least the initial block (m_pQEntry) and one spare.
+    if (m_iSize < m_iBlockSize * 3)
+        return; // Too small to bother
+
+    CQEntry* prev = m_pQEntry;
+    CQEntry* curr = prev->m_pNext;
+    int freed = 0;
+
+    // Walk the circular list, skip the first entry (always keep it).
+    while (curr != m_pQEntry)
+    {
+        // Check if ALL units in this entry are free.
+        bool allFree = true;
+        for (int i = 0; i < curr->m_iSize; ++i)
+        {
+            if (curr->m_pUnit[i].m_bTaken.load())
+            {
+                allFree = false;
+                break;
+            }
+        }
+
+        if (!allFree)
+        {
+            prev = curr;
+            curr = curr->m_pNext;
+            continue;
+        }
+
+        // Don't free if this entry contains m_pAvailUnit or is m_pCurrQueue.
+        bool containsAvail = (m_pAvailUnit >= curr->m_pUnit &&
+                              m_pAvailUnit < curr->m_pUnit + curr->m_iSize);
+        if (containsAvail || curr == m_pCurrQueue)
+        {
+            prev = curr;
+            curr = curr->m_pNext;
+            continue;
+        }
+
+        // Unlink and free this entry.
+        CQEntry* toFree = curr;
+        curr = curr->m_pNext;
+        prev->m_pNext = curr;
+
+        // Fix m_pLastQueue if we're removing it.
+        if (toFree == m_pLastQueue)
+            m_pLastQueue = prev;
+
+        m_iSize -= toFree->m_iSize;
+        freed += toFree->m_iSize;
+
+        delete[] toFree->m_pUnit;
+        delete[] toFree->m_pBuffer;
+        delete toFree;
+    }
+
+    if (freed > 0)
+    {
+        LOGC(qrlog.Note,
+              log << "CUnitQueue::shrink: freed " << freed << " units"
+                  << " capacity=" << m_iSize << " taken=" << m_iNumTaken.load());
+    }
+}
+
 srt::CUnit* srt::CUnitQueue::getNextAvailUnit()
 {
     const int iNumUnitsTotal = capacity();
@@ -191,7 +258,11 @@ void srt::CUnitQueue::makeUnitFree(CUnit* unit)
     SRT_ASSERT(unit->m_bTaken);
     unit->m_bTaken.store(false);
 
-    --m_iNumTaken;
+    const int taken = --m_iNumTaken;
+
+    // Shrink when utilization drops below 40% and pool is large enough.
+    if (taken * 10 < m_iSize * 4 && m_iSize >= m_iBlockSize * 3)
+        shrink_();
 }
 
 void srt::CUnitQueue::makeUnitTaken(CUnit* unit)
@@ -218,6 +289,11 @@ srt::CSndUList::~CSndUList()
 {
     releaseCond(m_ListCond);
     delete[] m_pHeap;
+}
+
+void srt::CSndUList::resetAtFork()
+{
+    resetCond(m_ListCond);
 }
 
 void srt::CSndUList::update(const CUDT* u, EReschedule reschedule, sync::steady_clock::time_point ts)
@@ -415,6 +491,17 @@ srt::CSndQueue::CSndQueue()
 
 srt::CSndQueue::~CSndQueue()
 {
+    delete m_pSndUList;
+}
+
+void srt::CSndQueue::resetAtFork()
+{
+    resetThread(&m_WorkerThread);
+    m_pSndUList->resetAtFork();
+}
+
+void srt::CSndQueue::stop()
+{
     m_bClosing = true;
 
     if (m_pTimer != NULL)
@@ -430,8 +517,6 @@ srt::CSndQueue::~CSndQueue()
         HLOGC(rslog.Debug, log << "SndQueue: EXIT");
         m_WorkerThread.join();
     }
-
-    delete m_pSndUList;
 }
 
 int srt::CSndQueue::ioctlQuery(int type) const
@@ -1168,15 +1253,6 @@ srt::CRcvQueue::CRcvQueue()
 
 srt::CRcvQueue::~CRcvQueue()
 {
-    m_bClosing = true;
-
-    if (m_WorkerThread.joinable())
-    {
-        HLOGC(rslog.Debug, log << "RcvQueue: EXIT");
-        m_WorkerThread.join();
-    }
-    releaseCond(m_BufferCond);
-
     delete m_pUnitQueue;
     delete m_pRcvUList;
     delete m_pHash;
@@ -1193,6 +1269,24 @@ srt::CRcvQueue::~CRcvQueue()
         }
     }
 }
+
+void srt::CRcvQueue::resetAtFork()
+{
+    resetThread(&m_WorkerThread);
+}
+
+void srt::CRcvQueue::stop()
+{
+    m_bClosing = true;
+
+    if (m_WorkerThread.joinable())
+    {
+        HLOGC(rslog.Debug, log << "RcvQueue: EXIT");
+        m_WorkerThread.join();
+    }
+    releaseCond(m_BufferCond);
+}
+
 
 #if ENABLE_LOGGING
 srt::sync::atomic<int> srt::CRcvQueue::m_counter(0);
@@ -1536,7 +1630,7 @@ srt::EConnectStatus srt::CRcvQueue::worker_TryAsyncRend_OrStore(int32_t id, CUni
         // side just started sending its handshake packets, the local side has already
         // run the CRcvQueue::worker thread, and this worker thread is trying to dispatch
         // the handshake packet too early, before the dispatcher has a chance to see
-        // this socket registerred in the RendezvousQueue, which causes the packet unable
+        // this socket registered in the RendezvousQueue, which causes the packet unable
         // to be dispatched. Therefore simply treat every "out of band" packet (with socket
         // not belonging to the connection and not registered as rendezvous) as "possible
         // attack" and ignore it. This also should better protect the rendezvous socket
@@ -1597,7 +1691,7 @@ srt::EConnectStatus srt::CRcvQueue::worker_TryAsyncRend_OrStore(int32_t id, CUni
             // that we KNOW (by the cst == CONN_ACCEPT result) that the socket should be inserted
             // into the pending anteroom.
 
-            CUDT* ne = getNewEntry(); // This function actuall removes the entry and returns it.
+            CUDT* ne = getNewEntry(); // This function actually removes the entry and returns it.
             // This **should** now always return a non-null value, but check it first
             // because if this accidentally isn't true, the call to worker_ProcessAddressedPacket will
             // result in redirecting it to here and so on until the call stack overflow. In case of
@@ -1819,16 +1913,35 @@ void srt::CRcvQueue::storePktClone(int32_t id, const CPacket& pkt)
     }
 }
 
-void srt::CMultiplexer::destroy()
+void srt::CMultiplexer::resetAtFork()
 {
-    // Reverse order of the assigned.
-    delete m_pRcvQueue;
-    delete m_pSndQueue;
-    delete m_pTimer;
+    if (m_pRcvQueue != NULL)
+        m_pRcvQueue->resetAtFork();
+    if (m_pSndQueue != NULL)
+        m_pSndQueue->resetAtFork();
+}
 
+void srt::CMultiplexer::close()
+{
     if (m_pChannel)
     {
         m_pChannel->close();
         delete m_pChannel;
+        m_pChannel = NULL;
     }
+}
+
+void srt::CMultiplexer::stop()
+{
+    if (m_pRcvQueue != NULL)
+        m_pRcvQueue->stop();
+    if (m_pSndQueue != NULL)
+        m_pSndQueue->stop();
+}
+
+void srt::CMultiplexer::destroy()
+{
+    // Reverse order of the assigned.
+    stop();
+    close();
 }

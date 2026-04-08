@@ -93,7 +93,7 @@ struct CSrtMuxerConfig
     int iUDPSndBufSize; // UDP sending buffer size
     int iUDPRcvBufSize; // UDP receiving buffer size
 
-    // NOTE: this operator is not reversable. The syntax must use:
+    // NOTE: this operator is not reversible. The syntax must use:
     //  muxer_entry == socket_entry
     bool isCompatWith(const CSrtMuxerConfig& other) const
     {
@@ -198,7 +198,7 @@ struct CSrtConfig: CSrtMuxerConfig
     static const int
         DEF_MSS = 1500,
         DEF_FLIGHT_SIZE = 25600,
-        DEF_BUFFER_SIZE = 8192, //Rcv buffer MUST NOT be bigger than Flight Flag size
+        DEF_BUFFER_SIZE = 16384, //Rcv buffer MUST NOT be bigger than Flight Flag size
         DEF_LINGER_S = 3*60,    // 3 minutes
         DEF_CONNTIMEO_S = 3;    // 3 seconds
 
@@ -212,7 +212,7 @@ struct CSrtConfig: CSrtMuxerConfig
     static const int      COMM_RESPONSE_TIMEOUT_MS      = 5 * 1000; // 5 seconds
     static const uint32_t COMM_DEF_MIN_STABILITY_TIMEOUT_MS = 60;   // 60 ms
 
-    // Mimimum recv flight flag size is 32 packets
+    // Minimum recv flight flag size is 32 packets
     static const int    DEF_MIN_FLIGHT_PKT = 32;
     static const size_t MAX_SID_LENGTH     = 512;
     static const size_t MAX_PFILTER_LENGTH = 64;
@@ -288,7 +288,7 @@ struct CSrtConfig: CSrtMuxerConfig
 
     CSrtConfig()
         : iMSS(DEF_MSS)
-        , zExpPayloadSize(SRT_LIVE_DEF_PLSIZE)
+        , zExpPayloadSize(SRT_LIVE_MAX_PLSIZE)
         , bSynSending(true)
         , bSynRecving(true)
         , iFlightFlagSize(DEF_FLIGHT_SIZE)
@@ -339,7 +339,7 @@ struct CSrtConfig: CSrtMuxerConfig
 
         // Default congestion is "live".
         // Available builtin congestions: "file".
-        // Others can be registerred.
+        // Others can be registered.
         sCongestion.set("live", 4);
     }
 

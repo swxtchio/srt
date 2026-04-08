@@ -8,7 +8,7 @@
 #
 
 cmake_minimum_required (VERSION 3.5 FATAL_ERROR)
-set (SRT_VERSION 1.5.4)
+set (SRT_VERSION 1.5.5)
 
 set (CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/scripts")
 include(CheckSymbolExists)
@@ -53,6 +53,26 @@ set_if(SYMLINKABLE LINUX OR DARWIN OR BSD OR SUNOS OR CYGWIN OR GNU_OS)
 set_if(NEED_DESTINATION  ${CMAKE_VERSION} VERSION_LESS "3.14.0")
 
 include(GNUInstallDirs)
+
+if(WIN32)
+	# Set compiler options.
+	set(variables
+		CMAKE_C_FLAGS_DEBUG
+		CMAKE_C_FLAGS_MINSIZEREL
+		CMAKE_C_FLAGS_RELEASE
+		CMAKE_C_FLAGS_RELWITHDEBINFO
+		CMAKE_CXX_FLAGS_DEBUG
+		CMAKE_CXX_FLAGS_MINSIZEREL
+		CMAKE_CXX_FLAGS_RELEASE
+		CMAKE_CXX_FLAGS_RELWITHDEBINFO
+	)
+
+	foreach(variable ${variables})
+		if(${variable} MATCHES "/MD")
+			string(REGEX REPLACE "/MD" "/MT" ${variable} "${${variable}}")
+		endif()
+	endforeach()
+endif()
 
 # The CMAKE_BUILD_TYPE seems not to be always set, weird.
 if (NOT DEFINED ENABLE_DEBUG)
@@ -122,6 +142,20 @@ endforeach()
 # SRT_MAVG_SAMPLING_RATE 40       /* Max sampling rate */
 # SRT_ENABLE_FREQUENT_LOG_TRACE 0 : set to 1 to enable printing reason for suppressed freq logs
 
+# CMake offers the OLD behavior, where names that are defined below with
+# option() function, will be deleted if they are not in cache or do not have set
+# type - so effectively options provided through LIBSRT_* prefix would be rejected.
+# We do want these variables, obviously.
+# NOTE: This is introduced in cmake 3.13, so the namespaced-option feature will not
+# work properly in the old cmake.
+if (CMAKE_VERSION VERSION_GREATER 3.12)
+	cmake_policy(SET CMP0077 NEW) 
+endif()
+
+# Import all options preceded with LIBSRT_ likely from a parent scope.
+# Names are not being checked, at worst it will set an unused variable.
+srt_import_parent_options()
+
 # option defaults
 set(ENABLE_HEAVY_LOGGING_DEFAULT OFF)
 
@@ -190,7 +224,7 @@ Please use SRT_USE_OPENSSL_STATIC_LIBS instead.")
 endif()
 
 # NOTE: Use ATOMIC_USE_SRT_SYNC_MUTEX and will override the auto-detection of the
-#  Atomic implemetation in srtcore/atomic.h.
+#  Atomic implementation in srtcore/atomic.h.
 option(ATOMIC_USE_SRT_SYNC_MUTEX "Use srt::sync::Mutex to Implement Atomics" OFF)
 if (ATOMIC_USE_SRT_SYNC_MUTEX)
    add_definitions(-DATOMIC_USE_SRT_SYNC_MUTEX=1)
@@ -254,7 +288,7 @@ endif()
 set(USE_ENCLIB "${USE_ENCLIB}" CACHE STRING "The crypto library that SRT uses")
 set_property(CACHE USE_ENCLIB PROPERTY STRINGS "openssl" "openssl-evp" "gnutls" "mbedtls" "botan")
 
-# Make sure DLLs and executabes go to the same path regardles of subdirectory
+# Make sure DLLs and executables go to the same path regardless of subdirectory
 set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
@@ -264,7 +298,7 @@ if (NOT DEFINED WITH_COMPILER_TYPE)
 	# This is for a case when you provided the prefix, but you didn't
 	# provide compiler type. This option is in this form predicted to work
 	# only on POSIX systems. Just typical compilers for Linux and Mac are
-	# included. 
+	# included.
 	if (DARWIN)
 		set (WITH_COMPILER_TYPE clang)
 	elseif (POSIX) # Posix, but not DARWIN
@@ -566,7 +600,7 @@ if (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Intel|Clang|AppleClang")
 	elseif (${CMAKE_CXX_COMPILER_ID} MATCHES "Clang|AppleClang")
 		message(STATUS "NOTE: CLANG ${CMAKE_CXX_COMPILER_VERSION} detected, unsure if >=C++11 is default, forcing C++11 on applications")
 		set (FORCE_CXX_STANDARD 1)
-	else() 
+	else()
 		message(STATUS "NOTE: ${CMAKE_CXX_COMPILER_ID} ${CMAKE_CXX_COMPILER_VERSION} - assuming default C++11.")
 	endif()
 else()
@@ -966,10 +1000,16 @@ else ()
 	message(STATUS "Pthread library: ${PTHREAD_LIBRARY}")
 endif()
 
+set(CMAKE_REQUIRED_LIBRARIES "${PTHREAD_LIBRARY};${CMAKE_REQUIRED_LIBRARIES}")
+unset(CMAKE_REQUIRED_QUIET)
+
+check_symbol_exists(pthread_atfork "pthread.h" HAVE_PTHREAD_ATFORK)
+if ("${HAVE_PTHREAD_ATFORK}" STREQUAL "1")
+    add_definitions(-DHAVE_PTHREAD_ATFORK=1)
+endif ()
+
 # To avoid the need for other judgments when ENABLE_STDCXX_SYNC is OFF in the future, this is a separate conditional statement.
 if (NOT ENABLE_STDCXX_SYNC AND ENABLE_MONOTONIC_CLOCK)
-	list(PREPEND CMAKE_REQUIRED_LIBRARIES "${PTHREAD_LIBRARY}")
-	unset(CMAKE_REQUIRED_QUIET)
 	check_symbol_exists(pthread_condattr_setclock "pthread.h" HAVE_PTHREAD_CONDATTR_SETCLOCK)
 	message(STATUS "Checking pthread_condattr_setclock: '${HAVE_PTHREAD_CONDATTR_SETCLOCK}'")
 	if ("${HAVE_PTHREAD_CONDATTR_SETCLOCK}" STREQUAL "1")
@@ -1355,7 +1395,7 @@ endmacro()
 macro(srt_make_application name)
 
 	srt_set_stdcxx(${name} "${USE_CXX_STD_APP}")
-	
+
 	# This is recommended by cmake, but it doesn't work anyway.
 	# What is needed is that this below CMAKE_INSTALL_RPATH (yes, relative)
 	# is added as is.
@@ -1368,7 +1408,7 @@ macro(srt_make_application name)
 
 	if (LINUX AND ENABLE_RELATIVE_LIBPATH AND NOT srt_libspec_static)
 		# This is only needed on Linux, on Windows (including Cygwin) the library file will
-		# be placed into the binrary directory anyway.
+		# be placed into the binary directory anyway.
 		# XXX not sure about Mac.
 		# See this name used already in install(${TARGET_srt} LIBRARY DESTINATION...).
 		set(FORCE_RPATH LINK_FLAGS -Wl,-rpath,.,-rpath,../${CMAKE_INSTALL_LIBDIR} BUILD_WITH_INSTALL_RPATH TRUE INSTALL_RPATH_USE_LINK_PATH TRUE)
@@ -1469,7 +1509,7 @@ if (ENABLE_APPS)
 			target_compile_options(uriparser-test PRIVATE -DTEST)
 			srt_set_stdcxx(uriparser-test "${USE_CXX_STD_APP}")
 		endif()
-		
+
 		srt_add_testprogram(srt-test-live)
 		srt_make_application(srt-test-live)
 
@@ -1508,11 +1548,11 @@ if (ENABLE_EXAMPLES)
 	srt_add_example(recvlive.cpp)
 
 	srt_add_example(sendfile.cpp)
-		
+
 	srt_add_example(recvfile.cpp)
 
 	srt_add_example(sendmsg.cpp)
-		
+
 	srt_add_example(recvmsg.cpp)
 
 	srt_add_example(test-c-client.c)
@@ -1533,7 +1573,7 @@ endif()
 
 if (ENABLE_UNITTESTS AND ENABLE_CXX11)
 
-	if (${CMAKE_VERSION} VERSION_LESS "3.10.0") 
+	if (${CMAKE_VERSION} VERSION_LESS "3.10.0")
 		message(STATUS "VERSION < 3.10 -- adding test using the old method")
 		set (USE_OLD_ADD_METHOD 1)
 	else()
